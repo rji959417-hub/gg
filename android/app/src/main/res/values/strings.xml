@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Bermuda Strike 3D</string>
+    <string name="title_activity_main">Bermuda Strike 3D</string>
+    <string name="package_name">com.bermudastrike.game3d</string>
+    <string name="custom_url_scheme">com.bermudastrike.game3d</string>
+</resources>
