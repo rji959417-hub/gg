@@ -1,8 +1,14 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import {
+  dampAngle,
+  EXTERNAL_CHARACTER_CONFIG,
+  ExternalAnimState,
+  ExternalCharacterInstance,
+  instantiateExternalCharacter,
+  LoadedExternalCharacterTemplate,
+  loadExternalCharacterTemplate,
+} from './externalCharacter';
 import {
   BoxCollider,
   ArticulatedCharacter,
@@ -172,15 +178,12 @@ export class BattleRoyaleEngine {
   private selectedSkin: CharacterSkin = CHARACTER_SKINS[0];
   private totalCombatants = 36;
   private playerModel!: ArticulatedCharacter;
-  private glbCharacterRoot: THREE.Group | null = null;
-  private glbTemplateScene: THREE.Group | null = null;
-  private glbAnimationClips: THREE.AnimationClip[] = [];
-  private glbMixer: THREE.AnimationMixer | null = null;
-  private glbActions: Partial<Record<'idle' | 'walk' | 'run' | 'jump' | 'crouch' | 'shoot', THREE.AnimationAction>> = {};
-  private activeGlbActionKey: string | null = null;
+  private externalTemplate: LoadedExternalCharacterTemplate | null = null;
+  private externalCharacter: ExternalCharacterInstance | null = null;
   private playerPos = new THREE.Vector3(0, 0, 0);
   private playerVel = new THREE.Vector3(0, 0, 0);
   private playerYaw = 0;
+  private characterYaw = 0;
   private cameraPitch = 0.14;
   private currentFov = 68;
   private isGrounded = true;
@@ -389,9 +392,9 @@ export class BattleRoyaleEngine {
     // Orient tracer along Z
     this.tracerGeo.rotateX(Math.PI / 2);
 
-    // Setup initial lobby player character & load Cyberpunk GLB character if present in /public
+    // Setup initial lobby player character & load Mixamo FBX / GLB character if present in /public
     this.rebuildPlayerModel(this.selectedSkin);
-    this.loadCyberpunkCharacterGlb();
+    void this.loadExternalPlayerModel();
     this.setupLobbyPose();
 
     if (!this.isSoftwareGl) {
@@ -403,86 +406,25 @@ export class BattleRoyaleEngine {
     this.startLoop();
   }
 
-  private loadCyberpunkCharacterGlb(): void {
-    const baseUrl = import.meta.env.BASE_URL || '/';
-    const glbUrl = `${baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`}cyberpunk_character.glb`;
-
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
-
-    const loader = new GLTFLoader();
-    loader.setDRACOLoader(dracoLoader);
-
-    loader.load(
-      glbUrl,
-      (gltf) => {
-        dracoLoader.dispose();
-        if (this.disposed) return;
-
-        this.glbTemplateScene = gltf.scene;
-        this.glbAnimationClips = gltf.animations || [];
-        this.attachCyberpunkGlbToPlayer();
-      },
-      undefined,
-      () => {
-        dracoLoader.dispose();
-        // Graceful fallback: built-in tactical character stays active when GLB is unavailable
-      }
-    );
+  private async loadExternalPlayerModel(): Promise<void> {
+    const template = await loadExternalCharacterTemplate();
+    if (this.disposed || !template) return;
+    this.externalTemplate = template;
+    this.attachExternalCharacterToPlayer();
   }
 
-  private attachCyberpunkGlbToPlayer(): void {
-    if (!this.playerModel || !this.glbTemplateScene) return;
+  private attachExternalCharacterToPlayer(): void {
+    if (!this.playerModel || !this.externalTemplate) return;
 
-    if (this.glbMixer) {
-      this.glbMixer.stopAllAction();
-      this.glbMixer = null;
-    }
-    this.glbActions = {};
-    this.activeGlbActionKey = null;
-
-    if (this.glbCharacterRoot && this.glbCharacterRoot.parent) {
-      this.glbCharacterRoot.parent.remove(this.glbCharacterRoot);
-    }
-
-    const cloned = SkeletonUtils.clone(this.glbTemplateScene) as THREE.Group;
-    cloned.traverse((child) => {
-      const mesh = child as THREE.Mesh;
-      if (mesh.isMesh) {
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        if ((child as THREE.SkinnedMesh).isSkinnedMesh) {
-          mesh.frustumCulled = false;
-        }
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        mats.forEach((mat) => {
-          if (mat && 'envMapIntensity' in mat) {
-            (mat as THREE.MeshStandardMaterial).envMapIntensity = 1.0;
-          }
-        });
+    if (this.externalCharacter) {
+      if (this.externalCharacter.wrapper.parent) {
+        this.externalCharacter.wrapper.parent.remove(this.externalCharacter.wrapper);
       }
-    });
-
-    const wrapper = new THREE.Group();
-    wrapper.add(cloned);
-    cloned.updateMatrixWorld(true);
-
-    // Normalize scale to realistic 1.78m soldier height and align feet flush to ground (y = 0)
-    const rawBox = new THREE.Box3().setFromObject(cloned);
-    const rawSize = _v1;
-    rawBox.getSize(rawSize);
-    if (rawSize.y > 0.001) {
-      const targetHeight = 1.78;
-      cloned.scale.multiplyScalar(targetHeight / rawSize.y);
-      cloned.updateMatrixWorld(true);
+      this.externalCharacter.dispose();
+      this.externalCharacter = null;
     }
 
-    const scaledBox = new THREE.Box3().setFromObject(cloned);
-    const center = _v2;
-    scaledBox.getCenter(center);
-    cloned.position.x -= center.x;
-    cloned.position.z -= center.z;
-    cloned.position.y -= scaledBox.min.y;
+    const instance = instantiateExternalCharacter(this.externalTemplate);
 
     // Hide procedural body meshes while keeping parachute, shadow, weapon mount & muzzle active
     this.playerModel.hips.visible = false;
@@ -492,67 +434,23 @@ export class BattleRoyaleEngine {
     this.playerModel.weaponMount.rotation.set(0, 0, 0);
     this.playerModel.root.add(this.playerModel.weaponMount);
 
-    this.glbCharacterRoot = wrapper;
-    this.playerModel.root.add(wrapper);
-
-    if (this.glbAnimationClips.length > 0) {
-      const mixer = new THREE.AnimationMixer(cloned);
-      const findClip = (pattern: RegExp) =>
-        this.glbAnimationClips.find((c) => pattern.test(c.name));
-
-      const idleClip = findClip(/idle|stand|breath/i) ?? this.glbAnimationClips[0];
-      const walkClip = findClip(/walk/i);
-      const runClip = findClip(/run|sprint/i) ?? walkClip;
-      const jumpClip = findClip(/jump|fall|air|glide/i);
-      const crouchClip = findClip(/crouch|sneak|duck/i);
-      const shootClip = findClip(/shoot|fire|attack|aim/i);
-
-      if (idleClip) this.glbActions.idle = mixer.clipAction(idleClip);
-      if (walkClip) this.glbActions.walk = mixer.clipAction(walkClip);
-      if (runClip) this.glbActions.run = mixer.clipAction(runClip);
-      if (jumpClip) this.glbActions.jump = mixer.clipAction(jumpClip);
-      if (crouchClip) this.glbActions.crouch = mixer.clipAction(crouchClip);
-      if (shootClip) this.glbActions.shoot = mixer.clipAction(shootClip);
-
-      this.glbMixer = mixer;
-      this.playGlbAnimation('idle');
-    }
-  }
-
-  private playGlbAnimation(key: 'idle' | 'walk' | 'run' | 'jump' | 'crouch' | 'shoot'): void {
-    if (!this.glbMixer) return;
-    const nextAction = this.glbActions[key] ?? this.glbActions.idle;
-    if (!nextAction) return;
-
-    const resolvedKey = this.glbActions[key] ? key : 'idle';
-    if (this.activeGlbActionKey === resolvedKey) return;
-
-    const prevAction = this.activeGlbActionKey
-      ? this.glbActions[this.activeGlbActionKey as keyof typeof this.glbActions]
-      : undefined;
-
-    nextAction.reset();
-    nextAction.enabled = true;
-    nextAction.setEffectiveTimeScale(1);
-    nextAction.setEffectiveWeight(1);
-    nextAction.play();
-
-    if (prevAction && prevAction !== nextAction) {
-      prevAction.crossFadeTo(nextAction, 0.18, true);
-    }
-    this.activeGlbActionKey = resolvedKey;
+    this.playerModel.root.add(instance.wrapper);
+    this.externalCharacter = instance;
   }
 
   private rebuildPlayerModel(skin: CharacterSkin): void {
+    if (this.externalCharacter) {
+      this.externalCharacter.dispose();
+      this.externalCharacter = null;
+    }
     if (this.playerModel) {
       this.scene.remove(this.playerModel.root);
       this.playerModel.materialsToDispose.forEach((m) => m.dispose());
     }
-    this.glbCharacterRoot = null;
     this.playerModel = createCharacterModel(skin, this.textures);
     this.scene.add(this.playerModel.root);
-    if (this.glbTemplateScene) {
-      this.attachCyberpunkGlbToPlayer();
+    if (this.externalTemplate) {
+      this.attachExternalCharacterToPlayer();
     }
     this.attachEquippedWeaponMesh();
   }
@@ -687,6 +585,7 @@ export class BattleRoyaleEngine {
     this.playerPos.set(startX, groundY + 40, startZ);
     this.playerVel.set(0, -4.0, 0);
     this.playerYaw = Math.atan2(-startX, -startZ);
+    this.characterYaw = this.playerYaw;
     this.cameraPitch = 0.24;
     this.chuteOpen = true;
     this.isGrounded = false;
@@ -1785,21 +1684,22 @@ export class BattleRoyaleEngine {
         gameAudio.playPickup();
       }
 
+      const steerTargetYaw = len > 0.08 ? Math.atan2(mx, mz) : this.playerYaw;
+      this.characterYaw = dampAngle(this.characterYaw, steerTargetYaw, 10, dt);
+
       this.playerModel.root.position.copy(this.playerPos);
-      this.playerModel.root.rotation.y = this.playerYaw;
+      this.playerModel.root.rotation.y = this.characterYaw;
       this.playerModel.contactShadow.visible = false;
       this.playerModel.leftLeg.rotation.x = 0.25;
       this.playerModel.rightLeg.rotation.x = -0.2;
       this.playerModel.leftShin.rotation.x = 0.35;
       this.playerModel.rightShin.rotation.x = 0.35;
-      if (this.glbCharacterRoot) {
-        this.glbCharacterRoot.scale.set(1, 1, 1);
-        this.glbCharacterRoot.position.y = 0;
-        this.glbCharacterRoot.rotation.set(0.12, 0, 0);
-        if (this.glbMixer) {
-          this.playGlbAnimation('jump');
-          this.glbMixer.update(dt);
-        }
+      if (this.externalCharacter) {
+        const w = this.externalCharacter.wrapper;
+        w.scale.set(1, 1, 1);
+        w.position.y = 0;
+        w.rotation.set(0.12, 0, 0);
+        this.externalCharacter.updateAnimation(dt, 'jump', len > 0.08, false);
       }
       return;
     }
@@ -1927,13 +1827,25 @@ export class BattleRoyaleEngine {
       this.isGrounded = true;
     }
 
-    // Animate Player Character Rig (Idle Breathing / Run / Sprint / Jump / Crouch / Prone / Gun Recoil vs Fists)
+    // Animate Player Character Rig & smoothly rotate toward movement direction (Free Fire style)
+    const isMoving = moveLen > 0.1;
+    const combatAiming = this.input.ads || this.input.firing || this.fireCooldown > 0 || this.punchTimer > 0;
+    if (combatAiming) {
+      this.characterYaw = dampAngle(this.characterYaw, this.playerYaw, 20, dt);
+    } else if (isMoving) {
+      const moveTargetYaw = Math.atan2(moveX, moveZ);
+      this.characterYaw = dampAngle(
+        this.characterYaw,
+        moveTargetYaw,
+        EXTERNAL_CHARACTER_CONFIG.turnSpeed,
+        dt
+      );
+    }
+
     this.playerModel.root.position.copy(this.playerPos);
-    this.playerModel.root.rotation.y = this.playerYaw;
+    this.playerModel.root.rotation.y = this.characterYaw;
     this.playerModel.contactShadow.visible = true;
     this.playerModel.contactShadow.position.y = Math.max(0.03, floorY - this.playerPos.y + 0.03);
-
-    const isMoving = moveLen > 0.1;
     if (isMoving && this.isGrounded) {
       const rate = this.stance === 'prone' ? 5.2 : sprintingNow ? 9.2 : this.stance === 'crouch' ? 5.0 : 6.4;
       this.animPhase += dt * rate;
@@ -2072,10 +1984,11 @@ export class BattleRoyaleEngine {
     this.playerModel.torso.rotation.x = THREE.MathUtils.damp(this.playerModel.torso.rotation.x, targetTorsoRx, 14, dt);
     this.playerModel.torso.rotation.y = THREE.MathUtils.damp(this.playerModel.torso.rotation.y, targetTorsoRy, 18, dt);
 
-    if (this.glbCharacterRoot) {
-      const glbTargetScaleY =
+    if (this.externalCharacter) {
+      const w = this.externalCharacter.wrapper;
+      const extTargetScaleY =
         this.stance === 'prone' ? 0.54 : this.stance === 'crouch' ? 0.74 : 1.0;
-      const glbTargetRx =
+      const extTargetRx =
         this.stance === 'prone'
           ? 0.45
           : this.stance === 'crouch'
@@ -2083,28 +1996,26 @@ export class BattleRoyaleEngine {
           : sprintingNow
           ? 0.09
           : 0;
-      const glbTargetY =
-        !this.glbMixer && isMoving && this.isGrounded
+      const extTargetY =
+        !this.externalCharacter.hasAnimations && isMoving && this.isGrounded
           ? Math.abs(Math.sin(this.animPhase)) * (sprintingNow ? 0.05 : 0.03)
           : 0;
 
-      this.glbCharacterRoot.scale.y = THREE.MathUtils.damp(this.glbCharacterRoot.scale.y, glbTargetScaleY, 14, dt);
-      this.glbCharacterRoot.rotation.x = THREE.MathUtils.damp(this.glbCharacterRoot.rotation.x, glbTargetRx, 14, dt);
-      this.glbCharacterRoot.position.y = THREE.MathUtils.damp(this.glbCharacterRoot.position.y, glbTargetY, 16, dt);
+      w.scale.y = THREE.MathUtils.damp(w.scale.y, extTargetScaleY, 14, dt);
+      w.rotation.x = THREE.MathUtils.damp(w.rotation.x, extTargetRx, 14, dt);
+      w.position.y = THREE.MathUtils.damp(w.position.y, extTargetY, 16, dt);
 
-      if (this.glbMixer) {
-        const animKey = !this.isGrounded
-          ? 'jump'
-          : this.stance === 'crouch' || this.stance === 'prone'
-          ? 'crouch'
-          : !isMoving
-          ? 'idle'
-          : sprintingNow
-          ? 'run'
-          : 'walk';
-        this.playGlbAnimation(animKey);
-        this.glbMixer.update(dt);
-      }
+      const animState: ExternalAnimState = !this.isGrounded
+        ? 'jump'
+        : this.stance === 'crouch' || this.stance === 'prone'
+        ? 'crouch'
+        : !isMoving
+        ? 'idle'
+        : sprintingNow
+        ? 'run'
+        : 'walk';
+
+      this.externalCharacter.updateAnimation(dt, animState, isMoving, sprintingNow);
 
       const mountY = this.stance === 'prone' ? 0.42 : this.stance === 'crouch' ? 0.85 : 1.24;
       this.playerModel.weaponMount.position.y = THREE.MathUtils.damp(this.playerModel.weaponMount.position.y, mountY, 14, dt);
@@ -2521,16 +2432,14 @@ export class BattleRoyaleEngine {
       this.playerModel.leftForearm.rotation.x = -0.52;
       this.playerModel.leftLeg.rotation.x = -0.05;
       this.playerModel.rightLeg.rotation.x = 0.06;
-      if (this.glbCharacterRoot) {
-        this.glbCharacterRoot.scale.set(1, 1, 1);
-        this.glbCharacterRoot.rotation.set(0, 0, 0);
-        this.glbCharacterRoot.position.y = this.glbMixer ? 0 : Math.sin(elapsed * 2.2) * 0.01;
+      if (this.externalCharacter) {
+        const w = this.externalCharacter.wrapper;
+        w.scale.set(1, 1, 1);
+        w.rotation.set(0, 0, 0);
+        w.position.y = this.externalCharacter.hasAnimations ? 0 : Math.sin(elapsed * 2.2) * 0.01;
         this.playerModel.weaponMount.position.set(-0.22, 1.22, 0.28);
         this.playerModel.weaponMount.rotation.set(0.15, 0, 0);
-        if (this.glbMixer) {
-          this.playGlbAnimation('idle');
-          this.glbMixer.update(dt);
-        }
+        this.externalCharacter.updateAnimation(dt, 'idle', false, false);
       }
       return;
     }
@@ -2916,6 +2825,12 @@ export class BattleRoyaleEngine {
       this.startLoop();
     };
 
+    const onDblClick = () => {
+      if (this.phase === 'playing' || this.phase === 'parachute') {
+        this.requestPointerLock();
+      }
+    };
+
     window.addEventListener('resize', onResize);
     document.addEventListener('pointerlockchange', onPointerLockChange);
     window.addEventListener('mousemove', onMouseMove);
@@ -2925,6 +2840,7 @@ export class BattleRoyaleEngine {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onWindowBlur);
+    canvas.addEventListener('dblclick', onDblClick);
     canvas.addEventListener('touchstart', onTouchStart, { passive: true });
     canvas.addEventListener('touchmove', onTouchMove, { passive: true });
     canvas.addEventListener('touchend', onTouchEnd);
@@ -2942,6 +2858,7 @@ export class BattleRoyaleEngine {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onWindowBlur);
+      canvas.removeEventListener('dblclick', onDblClick);
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
       canvas.removeEventListener('touchend', onTouchEnd);
@@ -3017,9 +2934,9 @@ export class BattleRoyaleEngine {
     clearTimeout(this.frameId);
     this.cleanupListeners();
     this.clearDynamicEntities();
-    if (this.glbMixer) {
-      this.glbMixer.stopAllAction();
-      this.glbMixer = null;
+    if (this.externalCharacter) {
+      this.externalCharacter.dispose();
+      this.externalCharacter = null;
     }
     if (this.playerModel) {
       this.playerModel.materialsToDispose.forEach((m) => m.dispose());
