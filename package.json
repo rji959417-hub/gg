@@ -1,13 +1,14 @@
 {
-  "name": "react-example",
+  "name": "bermuda-strike-3d",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Bermuda Strike 3D — Free Fire inspired 3D Battle Royale TPS game built with Three.js, React, TypeScript, and Tailwind CSS.",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist dev-dist server.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

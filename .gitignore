@@ -1,8 +1,15 @@
 node_modules/
 build/
 dist/
+dev-dist/
+.vite/
 coverage/
 .DS_Store
+Thumbs.db
 *.log
-.env*
+*.local
+.env
+.env.*
 !.env.example
+*.zip
+public/*.zip
