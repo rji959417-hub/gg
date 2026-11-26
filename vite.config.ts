@@ -2,11 +2,29 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
+import {fileURLToPath} from 'url';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function resolveBasePath(): string {
+  const explicit = process.env.VITE_BASE_PATH?.trim();
+  if (explicit) {
+    const withLeading = explicit.startsWith('/') ? explicit : `/${explicit}`;
+    return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
+  }
+  if (process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_REPOSITORY) {
+    const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+    if (repo && repo !== `${owner}.github.io`) {
+      return `/${repo}/`;
+    }
+  }
+  return '/';
+}
+
 export default defineConfig(() => {
-  const base = process.env.VITE_BASE_PATH || '/';
+  const base = resolveBasePath();
 
   return {
     base,

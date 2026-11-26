@@ -29,23 +29,40 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Setup GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
 
       - name: Determine GitHub Pages base path
         id: base_path
         run: |
-          REPO_NAME="${{ github.event.repository.name }}"
-          OWNER="${{ github.repository_owner }}"
-          if [ "$REPO_NAME" = "${OWNER}.github.io" ]; then
-            echo "base=/" >> "$GITHUB_OUTPUT"
-          else
-            echo "base=/${REPO_NAME}/" >> "$GITHUB_OUTPUT"
+          BASE_PATH="${{ steps.pages.outputs.base_path }}"
+          if [ -z "$BASE_PATH" ]; then
+            REPO_NAME="${{ github.event.repository.name }}"
+            OWNER="${{ github.repository_owner }}"
+            if [ "$REPO_NAME" = "${OWNER}.github.io" ]; then
+              BASE_PATH="/"
+            else
+              BASE_PATH="/${REPO_NAME}/"
+            fi
           fi
+          case "$BASE_PATH" in
+            */) ;;
+            *) BASE_PATH="${BASE_PATH}/" ;;
+          esac
+          echo "base=$BASE_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Build production bundle
         env:
           VITE_BASE_PATH: ${{ steps.base_path.outputs.base }}
         run: npm run build
+
+      - name: Prepare static Pages output
+        run: |
+          touch dist/.nojekyll
+          cp dist/index.html dist/404.html
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
